@@ -20,7 +20,16 @@ docker pull xpzouying/xiaohongshu-mcp
 
 Docker Hub 地址：[https://hub.docker.com/r/xpzouying/xiaohongshu-mcp](https://hub.docker.com/r/xpzouying/xiaohongshu-mcp)
 
-### 1.2 自己构建镜像（可选）
+### 1.2 从阿里云镜像源拉取（国内用户推荐）
+
+国内用户可以使用阿里云容器镜像服务，拉取速度更快：
+
+```bash
+# 拉取最新镜像
+docker pull crpi-hocnvtkomt7w9v8t.cn-beijing.personal.cr.aliyuncs.com/xpzouying/xiaohongshu-mcp
+```
+
+### 1.3 自己构建镜像（可选）
 
 在有项目的Dockerfile的目录运行
 
@@ -33,6 +42,12 @@ docker build -t xpzouying/xiaohongshu-mcp .
 <img width="2576" height="874" alt="image" src="https://github.com/user-attachments/assets/fe7e87f1-623f-409f-8b54-e11d380fc7b8" />
 
 ## 2. 手动 Docker Compose
+
+> **国内用户提示**：如需使用阿里云镜像源，请修改 `docker-compose.yml` 文件，注释掉 Docker Hub 镜像行，取消阿里云镜像行的注释：
+> ```yaml
+> # image: xpzouying/xiaohongshu-mcp
+> image: crpi-hocnvtkomt7w9v8t.cn-beijing.personal.cr.aliyuncs.com/xpzouying/xiaohongshu-mcp
+> ```
 
 ```bash
 # 注意：在 docker-compose.yml 文件的同一个目录，或者手动指定 docker-compose.yml。
@@ -77,7 +92,34 @@ docker compose pull && docker compose up -d
 
 <img width="1662" height="458" alt="image" src="https://github.com/user-attachments/assets/309c2dab-51c4-4502-a41b-cdd4a3dd57ac" />
 
-## 4. 扫码登录
+## 4. 配置代理（可选）
+
+如果需要通过代理访问小红书，可以通过 `XHS_PROXY` 环境变量配置。
+
+### 使用 docker run
+
+```bash
+docker run -e XHS_PROXY=http://user:pass@proxy:port xpzouying/xiaohongshu-mcp
+```
+
+### 使用 docker-compose
+
+在 `docker-compose.yml` 的 `environment` 中添加 `XHS_PROXY`：
+
+```yaml
+environment:
+  - ROD_BROWSER_BIN=/usr/bin/google-chrome
+  - COOKIES_PATH=/app/data/cookies.json
+  - XHS_PROXY=http://user:pass@proxy:port
+```
+
+支持 HTTP/HTTPS/SOCKS5 代理。日志中会自动隐藏代理的认证信息，输出示例：
+
+```
+Using proxy: http://***:***@proxy:port
+```
+
+## 5. 扫码登录
 
 1. **重要**，一定要先把 App 提前打开，准备扫码登录。
 2. 尽快扫码，有可能二维码会过期。

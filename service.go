@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/mattn/go-runewidth"
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/headless_browser"
 	"github.com/xpzouying/xiaohongshu-mcp/browser"
 	"github.com/xpzouying/xiaohongshu-mcp/configs"
 	"github.com/xpzouying/xiaohongshu-mcp/cookies"
 	"github.com/xpzouying/xiaohongshu-mcp/pkg/downloader"
+	"github.com/xpzouying/xiaohongshu-mcp/pkg/xhsutil"
 	"github.com/xpzouying/xiaohongshu-mcp/xiaohongshu"
 )
 
@@ -28,10 +28,14 @@ func NewXiaohongshuService() *XiaohongshuService {
 
 // PublishRequest 发布请求
 type PublishRequest struct {
-	Title   string   `json:"title" binding:"required"`
-	Content string   `json:"content" binding:"required"`
-	Images  []string `json:"images" binding:"required,min=1"`
-	Tags    []string `json:"tags,omitempty"`
+	Title      string   `json:"title" binding:"required"`
+	Content    string   `json:"content" binding:"required"`
+	Images     []string `json:"images" binding:"required,min=1"`
+	Tags       []string `json:"tags,omitempty"`
+	ScheduleAt string   `json:"schedule_at,omitempty"` // 定时发布时间，ISO8601格式，为空则立即发布
+	IsOriginal bool     `json:"is_original,omitempty"` // 是否声明原创
+	Visibility string   `json:"visibility,omitempty"`  // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
+	Products   []string `json:"products,omitempty"`    // 商品关键词列表，用于绑定带货商品
 }
 
 // LoginStatusResponse 登录状态响应
@@ -58,10 +62,13 @@ type PublishResponse struct {
 
 // PublishVideoRequest 发布视频请求（仅支持本地单个视频文件）
 type PublishVideoRequest struct {
-	Title   string   `json:"title" binding:"required"`
-	Content string   `json:"content" binding:"required"`
-	Video   string   `json:"video" binding:"required"`
-	Tags    []string `json:"tags,omitempty"`
+	Title      string   `json:"title" binding:"required"`
+	Content    string   `json:"content" binding:"required"`
+	Video      string   `json:"video" binding:"required"`
+	Tags       []string `json:"tags,omitempty"`
+	ScheduleAt string   `json:"schedule_at,omitempty"` // 定时发布时间，ISO8601格式，为空则立即发布
+	Visibility string   `json:"visibility,omitempty"`  // 可见范围: "公开可见"(默认), "仅自己可见", "仅互关好友可见"
+	Products   []string `json:"products,omitempty"`    // 商品关键词列表，用于绑定带货商品
 }
 
 // PublishVideoResponse 发布视频响应
@@ -166,10 +173,8 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 
 // PublishContent 发布内容
 func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishRequest) (*PublishResponse, error) {
-	// 验证标题长度
-	// 小红书限制：最大40个单位长度
-	// 中文/日文/韩文占2个单位，英文/数字占1个单位
-	if titleWidth := runewidth.StringWidth(req.Title); titleWidth > 40 {
+	// 验证标题长度（小红书限制：最大20个字）
+	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
 	}
 
@@ -179,12 +184,42 @@ func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishReq
 		return nil, err
 	}
 
+	// 解析定时发布时间
+	var scheduleTime *time.Time
+	if req.ScheduleAt != "" {
+		t, err := time.Parse(time.RFC3339, req.ScheduleAt)
+		if err != nil {
+			return nil, fmt.Errorf("定时发布时间格式错误，请使用 ISO8601 格式: %v", err)
+		}
+
+		// 校验定时发布时间范围：1小时至14天
+		now := time.Now()
+		minTime := now.Add(1 * time.Hour)
+		maxTime := now.Add(14 * 24 * time.Hour)
+
+		if t.Before(minTime) {
+			return nil, fmt.Errorf("定时发布时间必须至少在1小时后，当前设置: %s，最早可选: %s",
+				t.Format("2006-01-02 15:04"), minTime.Format("2006-01-02 15:04"))
+		}
+		if t.After(maxTime) {
+			return nil, fmt.Errorf("定时发布时间不能超过14天，当前设置: %s，最晚可选: %s",
+				t.Format("2006-01-02 15:04"), maxTime.Format("2006-01-02 15:04"))
+		}
+
+		scheduleTime = &t
+		logrus.Infof("设置定时发布时间: %s", t.Format("2006-01-02 15:04"))
+	}
+
 	// 构建发布内容
 	content := xiaohongshu.PublishImageContent{
-		Title:      req.Title,
-		Content:    req.Content,
-		Tags:       req.Tags,
-		ImagePaths: imagePaths,
+		Title:        req.Title,
+		Content:      req.Content,
+		Tags:         req.Tags,
+		ImagePaths:   imagePaths,
+		ScheduleTime: scheduleTime,
+		IsOriginal:   req.IsOriginal,
+		Visibility:   req.Visibility,
+		Products:     req.Products,
 	}
 
 	// 执行发布
@@ -228,8 +263,8 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 
 // PublishVideo 发布视频（本地文件）
 func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideoRequest) (*PublishVideoResponse, error) {
-	// 标题长度校验
-	if titleWidth := runewidth.StringWidth(req.Title); titleWidth > 40 {
+	// 标题长度校验（小红书限制：最大20个字）
+	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
 	}
 
@@ -241,12 +276,41 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 		return nil, fmt.Errorf("视频文件不存在或不可访问: %v", err)
 	}
 
+	// 解析定时发布时间
+	var scheduleTime *time.Time
+	if req.ScheduleAt != "" {
+		t, err := time.Parse(time.RFC3339, req.ScheduleAt)
+		if err != nil {
+			return nil, fmt.Errorf("定时发布时间格式错误，请使用 ISO8601 格式: %v", err)
+		}
+
+		// 校验定时发布时间范围：1小时至14天
+		now := time.Now()
+		minTime := now.Add(1 * time.Hour)
+		maxTime := now.Add(14 * 24 * time.Hour)
+
+		if t.Before(minTime) {
+			return nil, fmt.Errorf("定时发布时间必须至少在1小时后，当前设置: %s，最早可选: %s",
+				t.Format("2006-01-02 15:04"), minTime.Format("2006-01-02 15:04"))
+		}
+		if t.After(maxTime) {
+			return nil, fmt.Errorf("定时发布时间不能超过14天，当前设置: %s，最晚可选: %s",
+				t.Format("2006-01-02 15:04"), maxTime.Format("2006-01-02 15:04"))
+		}
+
+		scheduleTime = &t
+		logrus.Infof("设置定时发布时间: %s", t.Format("2006-01-02 15:04"))
+	}
+
 	// 构建发布内容
 	content := xiaohongshu.PublishVideoContent{
-		Title:     req.Title,
-		Content:   req.Content,
-		Tags:      req.Tags,
-		VideoPath: req.Video,
+		Title:        req.Title,
+		Content:      req.Content,
+		Tags:         req.Tags,
+		VideoPath:    req.Video,
+		ScheduleTime: scheduleTime,
+		Visibility:   req.Visibility,
+		Products:     req.Products,
 	}
 
 	// 执行发布
@@ -328,7 +392,12 @@ func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, fi
 }
 
 // GetFeedDetail 获取Feed详情
-func (s *XiaohongshuService) GetFeedDetail(ctx context.Context, feedID, xsecToken string) (*FeedDetailResponse, error) {
+func (s *XiaohongshuService) GetFeedDetail(ctx context.Context, feedID, xsecToken string, loadAllComments bool) (*FeedDetailResponse, error) {
+	return s.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, xiaohongshu.DefaultCommentLoadConfig())
+}
+
+// GetFeedDetailWithConfig 使用配置获取Feed详情
+func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config xiaohongshu.CommentLoadConfig) (*FeedDetailResponse, error) {
 	b := newBrowser()
 	defer b.Close()
 
@@ -339,7 +408,7 @@ func (s *XiaohongshuService) GetFeedDetail(ctx context.Context, feedID, xsecToke
 	action := xiaohongshu.NewFeedDetailAction(page)
 
 	// 获取 Feed 详情
-	result, err := action.GetFeedDetail(ctx, feedID, xsecToken)
+	result, err := action.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, config)
 	if err != nil {
 		return nil, err
 	}
@@ -451,6 +520,29 @@ func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, feedID, xsecTok
 		return nil, err
 	}
 	return &ActionResult{FeedID: feedID, Success: true, Message: "取消收藏成功或未收藏"}, nil
+}
+
+// ReplyCommentToFeed 回复指定评论
+func (s *XiaohongshuService) ReplyCommentToFeed(ctx context.Context, feedID, xsecToken, commentID, userID, content string) (*ReplyCommentResponse, error) {
+	b := newBrowser()
+	defer b.Close()
+
+	page := b.NewPage()
+	defer page.Close()
+
+	action := xiaohongshu.NewCommentFeedAction(page)
+
+	if err := action.ReplyToComment(ctx, feedID, xsecToken, commentID, userID, content); err != nil {
+		return nil, err
+	}
+
+	return &ReplyCommentResponse{
+		FeedID:          feedID,
+		TargetCommentID: commentID,
+		TargetUserID:    userID,
+		Success:         true,
+		Message:         "评论回复成功",
+	}, nil
 }
 
 func newBrowser() *headless_browser.Browser {
